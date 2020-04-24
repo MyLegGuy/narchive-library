@@ -10,7 +10,47 @@ namespace Narchive.Formats
 {
     public class NarcArchive
     {
-        public static void Create(NarcArchiveRootDirectoryEntry rootDirectory, string outputPath, bool hasFilenames = true)
+		// add it or return it if it's there
+		private static NarcArchiveDirectoryEntry insertFolderInto(NarcArchiveDirectoryEntry _d, string _searchName){
+			for (int i=0;i<_d.Entries.Count;++i){
+				if (_d.Entries[i].Name==_searchName && _d.Entries[i] is NarcArchiveDirectoryEntry){
+					return (NarcArchiveDirectoryEntry)_d.Entries[i];
+				}
+			}
+			NarcArchiveDirectoryEntry _newEntry = new NarcArchiveDirectoryEntry();
+			_newEntry.Name=_searchName;
+			_newEntry.Parent=_d;
+			_d.Entries.Add(_newEntry);
+			return _newEntry;
+		}
+		public static void create(Tuple<string,MemoryStream>[] _inFiles, string outputPath){
+			bool _usingFilenames = (_inFiles[0].Item1!=null);
+			NarcArchiveRootDirectoryEntry _root = new NarcArchiveRootDirectoryEntry();
+			if (_usingFilenames){
+				// make all the parent directory thingies and then shove the file entries into them.
+				for (int i=0;i<_inFiles.Length;++i){
+					NarcArchiveDirectoryEntry _curParent = _root;
+					int _startSearchIndex=0;
+					while(true){
+						int _nextSlashIndex = _inFiles[i].Item1.IndexOf('/',_startSearchIndex,_inFiles[i].Item1.Length-_startSearchIndex);
+						if (_nextSlashIndex!=-1){
+							String _curFolderName = _inFiles[i].Item1.Substring(_startSearchIndex,_nextSlashIndex-_startSearchIndex);
+							_curParent = insertFolderInto(_curParent,_curFolderName);
+							_startSearchIndex=_nextSlashIndex+1;
+						}else{
+							break;
+						}
+					}
+					_curParent.Entries.Add(new NarcArchiveFileEntry{dataStream=_inFiles[i].Item2, Name=Path.GetFileName(_inFiles[i].Item1)});
+				}
+			}else{
+				for (int i=0;i<_inFiles.Length;++i){
+					_root.Entries.Add(new NarcArchiveFileEntry{dataStream=_inFiles[i].Item2});
+				}
+			}
+			lowCreate(_root,outputPath,_usingFilenames);
+		}
+        public static void lowCreate(NarcArchiveRootDirectoryEntry rootDirectory, string outputPath, bool hasFilenames = true)
         {
             var directories = new List<NarcArchiveDirectoryEntry>
             {
@@ -36,8 +76,7 @@ namespace Narchive.Formats
                     }
                     else if (entry is NarcArchiveFileEntry fileEntry)
                     {
-                        var fileInfo = new FileInfo(fileEntry.Path);
-                        var length = (int)fileInfo.Length;
+                        var length = (int)fileEntry.dataStream.Length;
 
                         fileEntry.Index = fileIndex;
                         fileEntry.Offset = position;
@@ -56,153 +95,144 @@ namespace Narchive.Formats
             using (var output = new FileStream(outputPath, FileMode.Create, FileAccess.Write))
             using (var writer = new BinaryWriter(output))
             {
-                try
-                {
-                    // Write out the NARC header
-                    writer.Write((byte)'N');
-                    writer.Write((byte)'A');
-                    writer.Write((byte)'R');
-                    writer.Write((byte)'C');
-                    writer.Write((byte)0xFE);
-                    writer.Write((byte)0xFF);
-                    writer.Write((byte)0);
-                    writer.Write((byte)1);
+				// Write out the NARC header
+				writer.Write((byte)'N');
+				writer.Write((byte)'A');
+				writer.Write((byte)'R');
+				writer.Write((byte)'C');
+				writer.Write((byte)0xFE);
+				writer.Write((byte)0xFF);
+				writer.Write((byte)0);
+				writer.Write((byte)1);
 
-                    writer.Write(0); // File length (will be written to later)
+				writer.Write(0); // File length (will be written to later)
 
-                    writer.Write((short)16); // Header length (always 16)
-                    writer.Write((short)3); // Number of sections (always 3)
+				writer.Write((short)16); // Header length (always 16)
+				writer.Write((short)3); // Number of sections (always 3)
 
-                    // Write out the FATB section
-                    writer.Write((byte)'B');
-                    writer.Write((byte)'T');
-                    writer.Write((byte)'A');
-                    writer.Write((byte)'F');
+				// Write out the FATB section
+				writer.Write((byte)'B');
+				writer.Write((byte)'T');
+				writer.Write((byte)'A');
+				writer.Write((byte)'F');
 
-                    writer.Write(12 + (files.Count * 8)); // Section length
-                    writer.Write(files.Count); // Number of file entries
+				writer.Write(12 + (files.Count * 8)); // Section length
+				writer.Write(files.Count); // Number of file entries
 
-                    foreach (var file in files)
-                    {
-                        writer.Write(file.Offset); // Start position
-                        writer.Write(file.Offset + file.Length); // End position
-                    }
+				foreach (var file in files)
+				{
+					writer.Write(file.Offset); // Start position
+					writer.Write(file.Offset + file.Length); // End position
+				}
 
-                    // Write out the FNTB section
-                    writer.Write((byte)'B');
-                    writer.Write((byte)'T');
-                    writer.Write((byte)'N');
-                    writer.Write((byte)'F');
+				// Write out the FNTB section
+				writer.Write((byte)'B');
+				writer.Write((byte)'T');
+				writer.Write((byte)'N');
+				writer.Write((byte)'F');
 
-                    if (hasFilenames)
-                    {
-                        var fntbPosition = (int)output.Position - 4;
+				if (hasFilenames)
+				{
+					var fntbPosition = (int)output.Position - 4;
 
-                        writer.Write(0); // Section length (will be written to later)
+					writer.Write(0); // Section length (will be written to later)
 
-                        writer.Write(0); // Name entry offset for the root directory (will be written to later)
-                        writer.Write((short)0); // First file index (always 0)
-                        writer.Write((short)directories.Count); // Number of directories, including the root directory
+					writer.Write(0); // Name entry offset for the root directory (will be written to later)
+					writer.Write((short)0); // First file index (always 0)
+					writer.Write((short)directories.Count); // Number of directories, including the root directory
 
-                        for (var i = 1; i < directories.Count; i++)
-                        {
-                            writer.Write(0); // Name entry offset for this directory (will be written to later)
-                            writer.Write((short)directories[i].FirstFileIndex); // Index of the first file in this directory
-                            writer.Write((short)(directories[i].Parent.Index | 0xF000)); // Parent directory
-                        }
+					for (var i = 1; i < directories.Count; i++)
+					{
+						writer.Write(0); // Name entry offset for this directory (will be written to later)
+						writer.Write((short)directories[i].FirstFileIndex); // Index of the first file in this directory
+						writer.Write((short)(directories[i].Parent.Index | 0xF000)); // Parent directory
+					}
 
-                        position = directories.Count * 8;
-                        foreach (var directory in directories)
-                        {
-                            directory.NameEntryOffset = position;
+					position = directories.Count * 8;
+					foreach (var directory in directories)
+					{
+						directory.NameEntryOffset = position;
 
-                            foreach (var entry in directory.Entries)
-                            {
-                                var nameAsBytes = Encoding.UTF8.GetBytes(entry.Name);
+						foreach (var entry in directory.Entries)
+						{
+							var nameAsBytes = Encoding.UTF8.GetBytes(entry.Name);
 
-                                if (entry is NarcArchiveDirectoryEntry directoryEntry)
-                                {
-                                    writer.Write((byte)(nameAsBytes.Length | 0x80)); // Length of the directory name
-                                    writer.Write(nameAsBytes);
-                                    writer.Write((short)(directoryEntry.Index | 0xF000));
+							if (entry is NarcArchiveDirectoryEntry directoryEntry)
+							{
+								writer.Write((byte)(nameAsBytes.Length | 0x80)); // Length of the directory name
+								writer.Write(nameAsBytes);
+								writer.Write((short)(directoryEntry.Index | 0xF000));
 
-                                    position += nameAsBytes.Length + 3;
-                                }
-                                else if (entry is NarcArchiveFileEntry fileEntry)
-                                {
-                                    writer.Write((byte)nameAsBytes.Length); // Length of the file name
-                                    writer.Write(nameAsBytes);
+								position += nameAsBytes.Length + 3;
+							}
+							else if (entry is NarcArchiveFileEntry fileEntry)
+							{
+								writer.Write((byte)nameAsBytes.Length); // Length of the file name
+								writer.Write(nameAsBytes);
 
-                                    position += nameAsBytes.Length + 1;
-                                }
-                            }
+								position += nameAsBytes.Length + 1;
+							}
+						}
 
-                            writer.Write((byte)0);
+						writer.Write((byte)0);
 
-                            position++;
-                        }
+						position++;
+					}
 
-                        while (output.Length % 4 != 0)
-                        {
-                            writer.Write((byte)0xFF);
-                        }
+					while (output.Length % 4 != 0)
+					{
+						writer.Write((byte)0xFF);
+					}
 
-                        var fntbLength = (int)output.Position - fntbPosition;
+					var fntbLength = (int)output.Position - fntbPosition;
 
-                        // Go back and write the name entry offsets for each directory
-                        output.Position = fntbPosition + 4;
-                        writer.Write(fntbLength);
-                        foreach (var directory in directories)
-                        {
-                            writer.Write(directory.NameEntryOffset);
-                            output.Position += 4;
-                        }
-                        output.Position = fntbPosition + fntbLength;
-                    }
-                    else
-                    {
-                        // The FNTB section is always the same if there are no filenames
-                        writer.Write(16); // Section length (always 16)
-                        writer.Write(4); // Always 4
-                        writer.Write((short)0); // First file index (always 0)
-                        writer.Write((short)1); // Number of directories, including the root directory (always 1)
-                    }
+					// Go back and write the name entry offsets for each directory
+					output.Position = fntbPosition + 4;
+					writer.Write(fntbLength);
+					foreach (var directory in directories)
+					{
+						writer.Write(directory.NameEntryOffset);
+						output.Position += 4;
+					}
+					output.Position = fntbPosition + fntbLength;
+				}
+				else
+				{
+					// The FNTB section is always the same if there are no filenames
+					writer.Write(16); // Section length (always 16)
+					writer.Write(4); // Always 4
+					writer.Write((short)0); // First file index (always 0)
+					writer.Write((short)1); // Number of directories, including the root directory (always 1)
+				}
 
-                    // Write out the FIMG section
-                    writer.Write((byte)'G');
-                    writer.Write((byte)'M');
-                    writer.Write((byte)'I');
-                    writer.Write((byte)'F');
+				// Write out the FIMG section
+				writer.Write((byte)'G');
+				writer.Write((byte)'M');
+				writer.Write((byte)'I');
+				writer.Write((byte)'F');
 
-                    writer.Write(fimgLength + 8); // Section length
+				writer.Write(fimgLength + 8); // Section length
 
-                    foreach (var file in files)
-                    {
-                        using (var input = new FileStream(file.Path, FileMode.Open, FileAccess.Read))
-                        {
-                            input.CopyTo(output);
-                        }
+				foreach (var file in files)
+				{
+					file.dataStream.Seek(0,SeekOrigin.Begin);
+					file.dataStream.CopyTo(output);   
 
-                        while (output.Length % 4 != 0)
-                        {
-                            writer.Write((byte)0xFF);
-                        }
-                    }
+					while (output.Length % 4 != 0)
+					{
+						writer.Write((byte)0xFF);
+					}
+				}
 
-                    // Go back and write out the file length
-                    output.Position = 8;
-                    writer.Write((int)output.Length); // File length
-                    output.Position = output.Length;
-                }
-                catch (Exception e)
-                {
-                    output.SetLength(0);
-                    throw e;
-                }
+				// Go back and write out the file length
+				output.Position = 8;
+				writer.Write((int)output.Length); // File length
+				output.Position = output.Length;
             }
         }
 
-        public static void Extract(string inputPath, string outputPath, bool ignoreFilenames = false)
+		// returned names will be like "tmp/fileinsideofdirectory" or "filename"
+        public static Tuple<string,MemoryStream>[] extract(string inputPath, bool ignoreFilenames = false)
         {
             using (var input = new FileStream(inputPath, FileMode.Open, FileAccess.Read))
             using (var reader = new BinaryReader(input))
@@ -328,7 +358,7 @@ namespace Narchive.Formats
                             var entryName = reader.ReadString(entryNameLength);
                             var fileEntry = fileEntries[fileIndex];
 
-                            fileEntry.Directory = directoryEntries[directoryIndex];
+                            fileEntry.Parent = directoryEntries[directoryIndex];
                             fileEntry.Name = entryName;
 
                             fileIndex++;
@@ -356,47 +386,37 @@ namespace Narchive.Formats
                     throw new InvalidFileTypeException(string.Format(ErrorMessages.NotANarcFile, Path.GetFileName(inputPath)));
                 }
 
+				Tuple<string,MemoryStream>[] _ret = new Tuple<string,MemoryStream>[fileEntries.Count];
                 if (hasFilenames)
                 {
-                    foreach (var fileEntry in fileEntries)
-                    {
-                        var entryOutputPath = Path.Combine(outputPath, fileEntry.FullName);
-                        var entryOutputDirectory = Path.GetDirectoryName(entryOutputPath);
-                        if (!Directory.Exists(entryOutputDirectory))
+					// fileEntry
+					for (int i=0;i<fileEntries.Count;++i){
+                        MemoryStream _curDestStream = new MemoryStream();
+                        using (var entryStream = new SubReadStream(input, fimgPosition + 8 + fileEntries[i].Offset, fileEntries[i].Length))
                         {
-                            Directory.CreateDirectory(entryOutputDirectory);
+                            entryStream.CopyTo(_curDestStream);
                         }
-
-                        using (var output = new FileStream(entryOutputPath, FileMode.Create, FileAccess.Write))
-                        using (var entryStream = new SubReadStream(input, fimgPosition + 8 + fileEntry.Offset, fileEntry.Length))
-                        {
-                            entryStream.CopyTo(output);
-                        }
-                    }
+						_ret[i] = new Tuple<string,MemoryStream>(fileEntries[i].FullName,_curDestStream);
+					}
                 }
                 else
                 {
                     // This NARC doesn't contain filenames and directory names, so just use a file index as their filename
                     var index = 0;
-                    var numOfDigits = Math.Floor(Math.Log10(fileEntryCount) + 1);
                     foreach (var fileEntry in fileEntries)
                     {
-                        var entryName = $"{Path.GetFileNameWithoutExtension(inputPath)}_{index.ToString($"D{numOfDigits}")}";
-                        var entryOutputPath = Path.Combine(outputPath, entryName);
-                        if (!Directory.Exists(outputPath))
-                        {
-                            Directory.CreateDirectory(outputPath);
-                        }
-
-                        using (var output = new FileStream(entryOutputPath, FileMode.Create, FileAccess.Write))
+						MemoryStream _curDestStream = new MemoryStream();
                         using (var entryStream = new SubReadStream(input, fimgPosition + 8 + fileEntry.Offset, fileEntry.Length))
                         {
-                            entryStream.CopyTo(output);
+                            entryStream.CopyTo(_curDestStream);
+							_curDestStream.Seek(0,SeekOrigin.Begin);
                         }
 
+						_ret[index] = new Tuple<string,MemoryStream>(null,_curDestStream);
                         index++;
                     }
                 }
+				return _ret;
             }
         }
     }

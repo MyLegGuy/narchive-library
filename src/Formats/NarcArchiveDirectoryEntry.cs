@@ -12,11 +12,6 @@ namespace Narchive.Formats
             : Name;
 
         /// <summary>
-        /// Gets or sets the parent directory.
-        /// </summary>
-        public virtual NarcArchiveDirectoryEntry Parent { get; set; }
-
-        /// <summary>
         /// Gets the entries in the directory.
         /// </summary>
         public List<NarcArchiveEntry> Entries { get; set; } = new List<NarcArchiveEntry>();

@@ -17,9 +17,14 @@
         /// </summary>
         public abstract string FullName { get; }
 
+		/// <summary>
+        /// Gets or sets the parent directory.
+        /// </summary>
+        public virtual NarcArchiveDirectoryEntry Parent { get; set; }
+		
         /// <summary>
         /// Gets or sets the path, on the filesystem, of the entry.
         /// </summary>
-        public string Path { get; set; }
+        //public string Path { get; set; }
     }
 }

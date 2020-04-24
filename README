@@ -1,0 +1,32 @@
+narchive but it's a library.
+
+test program:
+```
+using System;
+using System.IO;
+using Narchive.Formats;
+public static class program{
+	public static int Main(string[] args){
+		// load narc.
+		// if the narc has filenames, the item1 will be the filename.
+		// if the narc has subdirectories also, the name could be something like "folder/filename"
+		// if there are no filenames, item1 will be null
+		Tuple<string,MemoryStream>[] _files = NarcArchive.extract("/tmp/test.narc", false);
+
+		// test write all the files
+		int i;
+		for (i=0;i<_files.Length;++i){
+			Console.WriteLine(_files[i].Item1!=null ? _files[i].Item1 : "(null)");
+			using (FileStream fs = File.OpenWrite("/tmp/out"+i)){
+				// the memorystreams are already at the start for us.
+				_files[i].Item2.CopyTo(fs);
+			}
+		}
+
+		// test make a narc.
+		// if you check the hash of /tmp/test.narc and /tmp/out.narc, they should be the same.
+		NarcArchive.create(_files,"/tmp/out.narc");
+		return 0;
+	}
+}
+```
