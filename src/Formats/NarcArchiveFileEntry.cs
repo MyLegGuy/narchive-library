@@ -20,6 +20,6 @@ namespace Narchive.Formats
         /// </summary>
         internal int Length { get; set; }
 
-		public MemoryStream dataStream;
+		public Stream dataStream;
     }
 }

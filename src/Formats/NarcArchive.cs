@@ -23,29 +23,29 @@ namespace Narchive.Formats
 			_d.Entries.Add(_newEntry);
 			return _newEntry;
 		}
-		public static void create(Tuple<string,MemoryStream>[] _inFiles, string outputPath){
-			bool _usingFilenames = (_inFiles[0].Item1!=null);
+		public static void create(string[] _inNames, Stream[] _inStreams, string outputPath){
+			bool _usingFilenames = (_inNames!=null);
 			NarcArchiveRootDirectoryEntry _root = new NarcArchiveRootDirectoryEntry();
 			if (_usingFilenames){
 				// make all the parent directory thingies and then shove the file entries into them.
-				for (int i=0;i<_inFiles.Length;++i){
+				for (int i=0;i<_inStreams.Length;++i){
 					NarcArchiveDirectoryEntry _curParent = _root;
 					int _startSearchIndex=0;
 					while(true){
-						int _nextSlashIndex = _inFiles[i].Item1.IndexOf('/',_startSearchIndex,_inFiles[i].Item1.Length-_startSearchIndex);
+						int _nextSlashIndex = _inNames[i].IndexOf('/',_startSearchIndex,_inNames[i].Length-_startSearchIndex);
 						if (_nextSlashIndex!=-1){
-							String _curFolderName = _inFiles[i].Item1.Substring(_startSearchIndex,_nextSlashIndex-_startSearchIndex);
+							String _curFolderName = _inNames[i].Substring(_startSearchIndex,_nextSlashIndex-_startSearchIndex);
 							_curParent = insertFolderInto(_curParent,_curFolderName);
 							_startSearchIndex=_nextSlashIndex+1;
 						}else{
 							break;
 						}
 					}
-					_curParent.Entries.Add(new NarcArchiveFileEntry{dataStream=_inFiles[i].Item2, Name=Path.GetFileName(_inFiles[i].Item1)});
+					_curParent.Entries.Add(new NarcArchiveFileEntry{dataStream=_inStreams[i], Name=Path.GetFileName(_inNames[i])});
 				}
 			}else{
-				for (int i=0;i<_inFiles.Length;++i){
-					_root.Entries.Add(new NarcArchiveFileEntry{dataStream=_inFiles[i].Item2});
+				for (int i=0;i<_inStreams.Length;++i){
+					_root.Entries.Add(new NarcArchiveFileEntry{dataStream=_inStreams[i]});
 				}
 			}
 			lowCreate(_root,outputPath,_usingFilenames);
@@ -232,7 +232,7 @@ namespace Narchive.Formats
         }
 
 		// returned names will be like "tmp/fileinsideofdirectory" or "filename"
-        public static Tuple<string,MemoryStream>[] extract(string inputPath, bool ignoreFilenames = false)
+        public static Tuple<string[],MemoryStream[]> extract(string inputPath, bool ignoreFilenames = false)
         {
             using (var input = new FileStream(inputPath, FileMode.Open, FileAccess.Read))
             using (var reader = new BinaryReader(input))
@@ -386,37 +386,37 @@ namespace Narchive.Formats
                     throw new InvalidFileTypeException(string.Format(ErrorMessages.NotANarcFile, Path.GetFileName(inputPath)));
                 }
 
-				Tuple<string,MemoryStream>[] _ret = new Tuple<string,MemoryStream>[fileEntries.Count];
+				string[] _retNames;
+				MemoryStream[] _retStreams = new MemoryStream[fileEntries.Count];
                 if (hasFilenames)
                 {
-					// fileEntry
+					_retNames = new string[fileEntries.Count];
 					for (int i=0;i<fileEntries.Count;++i){
-                        MemoryStream _curDestStream = new MemoryStream();
+						_retNames[i]=fileEntries[i].FullName;
+                        _retStreams[i] = new MemoryStream();
                         using (var entryStream = new SubReadStream(input, fimgPosition + 8 + fileEntries[i].Offset, fileEntries[i].Length))
                         {
-                            entryStream.CopyTo(_curDestStream);
+                            entryStream.CopyTo(_retStreams[i]);
                         }
-						_ret[i] = new Tuple<string,MemoryStream>(fileEntries[i].FullName,_curDestStream);
 					}
                 }
                 else
                 {
+					_retNames=null;
                     // This NARC doesn't contain filenames and directory names, so just use a file index as their filename
-                    var index = 0;
+                    var index = 0; // think about how great it'll be when we have foreach! we won't need index variables or anyth-
                     foreach (var fileEntry in fileEntries)
                     {
-						MemoryStream _curDestStream = new MemoryStream();
+						_retStreams[index] = new MemoryStream();
                         using (var entryStream = new SubReadStream(input, fimgPosition + 8 + fileEntry.Offset, fileEntry.Length))
                         {
-                            entryStream.CopyTo(_curDestStream);
-							_curDestStream.Seek(0,SeekOrigin.Begin);
+                            entryStream.CopyTo(_retStreams[index]);
+							_retStreams[index].Seek(0,SeekOrigin.Begin);
                         }
-
-						_ret[index] = new Tuple<string,MemoryStream>(null,_curDestStream);
                         index++;
                     }
                 }
-				return _ret;
+				return new Tuple<string[],MemoryStream[]>(_retNames,_retStreams);
             }
         }
     }
