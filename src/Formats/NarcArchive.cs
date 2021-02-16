@@ -8,6 +8,25 @@ using System.Text;
 
 namespace Narchive.Formats
 {
+
+	public abstract class CopyOnlyStream {
+		public abstract void CopyTo(Stream s);
+		public abstract long getLength();
+	}
+	public class CopyOnlyFromStream : CopyOnlyStream{
+		Stream internalstream;
+		public CopyOnlyFromStream(Stream s){
+			internalstream=s;
+		}
+		public override long getLength(){
+			return internalstream.Length;
+		}
+		public override void CopyTo(Stream other){
+			internalstream.Seek(0,SeekOrigin.Begin);
+			internalstream.CopyTo(other);
+		}
+	}
+	
     public class NarcArchive
     {
 		// add it or return it if it's there
@@ -23,7 +42,7 @@ namespace Narchive.Formats
 			_d.Entries.Add(_newEntry);
 			return _newEntry;
 		}
-		public static void create(string[] _inNames, Stream[] _inStreams, string outputPath){
+		public static void create(string[] _inNames, CopyOnlyStream[] _inStreams, string outputPath){
 			bool _usingFilenames = (_inNames!=null);
 			NarcArchiveRootDirectoryEntry _root = new NarcArchiveRootDirectoryEntry();
 			if (_usingFilenames){
@@ -49,6 +68,32 @@ namespace Narchive.Formats
 				}
 			}
 			lowCreate(_root,outputPath,_usingFilenames);
+		}
+		public static void create(string[] _inNames, Stream[] _inStreams, string outputPath){
+			CopyOnlyStream[] b = new CopyOnlyStream[_inStreams.Length];
+			for (int i=0;i<b.Length;++i){
+				b[i]=new CopyOnlyFromStream(_inStreams[i]);
+			}
+			create(_inNames,b,outputPath);
+		}
+		public static String[] getFilenames(string inputPath){
+			String[] retarr;
+			using (var input = new FileStream(inputPath, FileMode.Open, FileAccess.Read))
+            using (var reader = new BinaryReader(input))
+            {
+				Tuple<long,bool,List<NarcArchiveFileEntry>> got = startReadingNarc(input, reader, inputPath, false);
+				if (!got.Item2){
+					reader.Dispose();
+					input.Dispose();
+					return null;
+				}
+				List<NarcArchiveFileEntry> gotlist = got.Item3;
+				retarr = new String[gotlist.Count];
+				for (int i=0;i<gotlist.Count;++i){
+					retarr[i]=gotlist[i].Name;
+				}
+			}
+			return retarr;
 		}
         public static void lowCreate(NarcArchiveRootDirectoryEntry rootDirectory, string outputPath, bool hasFilenames = true)
         {
@@ -76,7 +121,7 @@ namespace Narchive.Formats
                     }
                     else if (entry is NarcArchiveFileEntry fileEntry)
                     {
-                        var length = (int)fileEntry.dataStream.Length;
+                        var length = (int)fileEntry.dataStream.getLength();
 
                         fileEntry.Index = fileIndex;
                         fileEntry.Offset = position;
@@ -215,7 +260,6 @@ namespace Narchive.Formats
 
 				foreach (var file in files)
 				{
-					file.dataStream.Seek(0,SeekOrigin.Begin);
 					file.dataStream.CopyTo(output);   
 
 					while (output.Length % 4 != 0)
@@ -231,150 +275,167 @@ namespace Narchive.Formats
             }
         }
 
+		// returns tuple with:
+		// fimgPosition
+		// hasFilenames
+		// fileEntries
+		public static Tuple<long,bool,List<NarcArchiveFileEntry>> startReadingNarc(FileStream input, BinaryReader reader, string inputPathForErrorMessages, bool ignoreFilenames){
+			// Read the NARC header
+			if (!(reader.ReadByte() == 'N'
+				  && reader.ReadByte() == 'A'
+				  && reader.ReadByte() == 'R'
+				  && reader.ReadByte() == 'C'
+				  && reader.ReadByte() == 0xFE
+				  && reader.ReadByte() == 0xFF
+				  && reader.ReadByte() == 0
+				  && reader.ReadByte() == 1
+				  && reader.ReadInt32() == input.Length))
+			{
+				throw new InvalidFileTypeException(string.Format(ErrorMessages.NotANarcFile, Path.GetFileName(inputPathForErrorMessages)));
+			}
+
+			var headerLength = reader.ReadInt16();
+			var fatbPosition = headerLength;
+
+			// Read the FATB section
+			input.Position = fatbPosition;
+			if (!(reader.ReadByte() == 'B'
+				  && reader.ReadByte() == 'T'
+				  && reader.ReadByte() == 'A'
+				  && reader.ReadByte() == 'F'))
+			{
+				throw new InvalidFileTypeException(string.Format(ErrorMessages.NotANarcFile, Path.GetFileName(inputPathForErrorMessages)));
+			}
+
+			var fatbLength = reader.ReadInt32();
+			var fntbPosition = fatbPosition + fatbLength;
+
+			var fileEntryCount = reader.ReadInt32();
+			var fileEntries = new List<NarcArchiveFileEntry>(fileEntryCount);
+			for (var i = 0; i < fileEntryCount; i++)
+			{
+				var offset = reader.ReadInt32();
+				var length = reader.ReadInt32() - offset;
+				fileEntries.Add(new NarcArchiveFileEntry
+								{
+									Offset = offset,
+									Length = length,
+								});
+			}
+
+			// Read the FNTB section
+			input.Position = fntbPosition;
+			if (!(reader.ReadByte() == 'B'
+				  && reader.ReadByte() == 'T'
+				  && reader.ReadByte() == 'N'
+				  && reader.ReadByte() == 'F'))
+			{
+				throw new InvalidFileTypeException(string.Format(ErrorMessages.NotANarcFile, Path.GetFileName(inputPathForErrorMessages)));
+			}
+                
+			var fntbLength = reader.ReadInt32();
+			long fimgPosition = fntbPosition + fntbLength;
+
+			var hasFilenames = !ignoreFilenames;
+
+			// If the FNTB length is 16 or less, it's impossible for the entries to have filenames.
+			// This section will always be at least 16 bytes long, but technically it's only required to be at least 8 bytes long.
+			if (fntbLength <= 16)
+			{
+				hasFilenames = false;
+			}
+
+			var rootNameEntryOffset = reader.ReadInt32();
+
+			// If the root name entry offset is 4, then the entries don't have filenames.
+			if (rootNameEntryOffset == 4)
+			{
+				hasFilenames = false;
+			}
+
+			if (hasFilenames)
+			{
+				var rootFirstFileIndex = reader.ReadInt16();
+				var rootDirectory = new NarcArchiveRootDirectoryEntry();
+
+				var directoryEntryCount = reader.ReadInt16(); // This includes the root directory
+				var directoryEntries = new List<NarcArchiveDirectoryEntry>(directoryEntryCount)
+                    {
+                        rootDirectory,
+                    };
+
+				// This NARC contains filenames and directory names, so read them
+				for (var i = 1; i < directoryEntryCount; i++)
+				{
+					var nameEntryTableOffset = reader.ReadInt32();
+					var firstFileIndex = reader.ReadInt16();
+					var parentDirectoryIndex = reader.ReadInt16() & 0xFFF;
+
+					directoryEntries.Add(new NarcArchiveDirectoryEntry
+										 {
+											 Index = i,
+											 Parent = directoryEntries[parentDirectoryIndex],
+											 NameEntryOffset = nameEntryTableOffset,
+											 FirstFileIndex = firstFileIndex,
+										 });
+				}
+
+				NarcArchiveDirectoryEntry currentDirectory = rootDirectory;
+				var directoryIndex = 0;
+				var fileIndex = 0;
+				while (directoryIndex < directoryEntryCount)
+				{
+					var entryNameLength = reader.ReadByte();
+					if ((entryNameLength & 0x80) != 0)
+					{
+						// This is a directory name entry
+						var entryName = reader.ReadString(entryNameLength & 0x7F);
+						var entryDirectoryIndex = reader.ReadInt16() & 0xFFF;
+						var directoryEntry = directoryEntries[entryDirectoryIndex];
+
+						directoryEntry.Name = entryName;
+					}
+					else if (entryNameLength != 0)
+					{
+						// This is a file name entry
+						var entryName = reader.ReadString(entryNameLength);
+						var fileEntry = fileEntries[fileIndex];
+
+						fileEntry.Parent = directoryEntries[directoryIndex];
+						fileEntry.Name = entryName;
+
+						fileIndex++;
+					}
+					else
+					{
+						// This is the end of a directory
+						directoryIndex++;
+						if (directoryIndex >= directoryEntryCount)
+						{
+							break;
+						}
+						currentDirectory = directoryEntries[directoryIndex];
+					}
+				}
+			}
+			return new Tuple<long, bool, List<NarcArchiveFileEntry>>(fimgPosition,hasFilenames,fileEntries);
+		}
+		
 		// returned names will be like "tmp/fileinsideofdirectory" or "filename"
         public static Tuple<string[],MemoryStream[]> extract(string inputPath, bool ignoreFilenames = false)
         {
             using (var input = new FileStream(inputPath, FileMode.Open, FileAccess.Read))
             using (var reader = new BinaryReader(input))
             {
-                // Read the NARC header
-                if (!(reader.ReadByte() == 'N'
-                    && reader.ReadByte() == 'A'
-                    && reader.ReadByte() == 'R'
-                    && reader.ReadByte() == 'C'
-                    && reader.ReadByte() == 0xFE
-                    && reader.ReadByte() == 0xFF
-                    && reader.ReadByte() == 0
-                    && reader.ReadByte() == 1
-                    && reader.ReadInt32() == input.Length))
+				bool hasFilenames;
+				long fimgPosition;
+				List<NarcArchiveFileEntry> fileEntries;
                 {
-                    throw new InvalidFileTypeException(string.Format(ErrorMessages.NotANarcFile, Path.GetFileName(inputPath)));
-                }
-
-                var headerLength = reader.ReadInt16();
-                var fatbPosition = headerLength;
-
-                // Read the FATB section
-                input.Position = fatbPosition;
-                if (!(reader.ReadByte() == 'B'
-                    && reader.ReadByte() == 'T'
-                    && reader.ReadByte() == 'A'
-                    && reader.ReadByte() == 'F'))
-                {
-                    throw new InvalidFileTypeException(string.Format(ErrorMessages.NotANarcFile, Path.GetFileName(inputPath)));
-                }
-
-                var fatbLength = reader.ReadInt32();
-                var fntbPosition = fatbPosition + fatbLength;
-
-                var fileEntryCount = reader.ReadInt32();
-                var fileEntries = new List<NarcArchiveFileEntry>(fileEntryCount);
-                for (var i = 0; i < fileEntryCount; i++)
-                {
-                    var offset = reader.ReadInt32();
-                    var length = reader.ReadInt32() - offset;
-                    fileEntries.Add(new NarcArchiveFileEntry
-                    {
-                        Offset = offset,
-                        Length = length,
-                    });
-                }
-
-                // Read the FNTB section
-                input.Position = fntbPosition;
-                if (!(reader.ReadByte() == 'B'
-                    && reader.ReadByte() == 'T'
-                    && reader.ReadByte() == 'N'
-                    && reader.ReadByte() == 'F'))
-                {
-                    throw new InvalidFileTypeException(string.Format(ErrorMessages.NotANarcFile, Path.GetFileName(inputPath)));
-                }
-                
-                var fntbLength = reader.ReadInt32();
-                var fimgPosition = fntbPosition + fntbLength;
-
-                var hasFilenames = !ignoreFilenames;
-
-                // If the FNTB length is 16 or less, it's impossible for the entries to have filenames.
-                // This section will always be at least 16 bytes long, but technically it's only required to be at least 8 bytes long.
-                if (fntbLength <= 16)
-                {
-                    hasFilenames = false;
-                }
-
-                var rootNameEntryOffset = reader.ReadInt32();
-
-                // If the root name entry offset is 4, then the entries don't have filenames.
-                if (rootNameEntryOffset == 4)
-                {
-                    hasFilenames = false;
-                }
-
-                if (hasFilenames)
-                {
-                    var rootFirstFileIndex = reader.ReadInt16();
-                    var rootDirectory = new NarcArchiveRootDirectoryEntry();
-
-                    var directoryEntryCount = reader.ReadInt16(); // This includes the root directory
-                    var directoryEntries = new List<NarcArchiveDirectoryEntry>(directoryEntryCount)
-                    {
-                        rootDirectory,
-                    };
-
-                    // This NARC contains filenames and directory names, so read them
-                    for (var i = 1; i < directoryEntryCount; i++)
-                    {
-                        var nameEntryTableOffset = reader.ReadInt32();
-                        var firstFileIndex = reader.ReadInt16();
-                        var parentDirectoryIndex = reader.ReadInt16() & 0xFFF;
-
-                        directoryEntries.Add(new NarcArchiveDirectoryEntry
-                        {
-                            Index = i,
-                            Parent = directoryEntries[parentDirectoryIndex],
-                            NameEntryOffset = nameEntryTableOffset,
-                            FirstFileIndex = firstFileIndex,
-                        });
-                    }
-
-                    NarcArchiveDirectoryEntry currentDirectory = rootDirectory;
-                    var directoryIndex = 0;
-                    var fileIndex = 0;
-                    while (directoryIndex < directoryEntryCount)
-                    {
-                        var entryNameLength = reader.ReadByte();
-                        if ((entryNameLength & 0x80) != 0)
-                        {
-                            // This is a directory name entry
-                            var entryName = reader.ReadString(entryNameLength & 0x7F);
-                            var entryDirectoryIndex = reader.ReadInt16() & 0xFFF;
-                            var directoryEntry = directoryEntries[entryDirectoryIndex];
-
-                            directoryEntry.Name = entryName;
-                        }
-                        else if (entryNameLength != 0)
-                        {
-                            // This is a file name entry
-                            var entryName = reader.ReadString(entryNameLength);
-                            var fileEntry = fileEntries[fileIndex];
-
-                            fileEntry.Parent = directoryEntries[directoryIndex];
-                            fileEntry.Name = entryName;
-
-                            fileIndex++;
-                        }
-                        else
-                        {
-                            // This is the end of a directory
-                            directoryIndex++;
-                            if (directoryIndex >= directoryEntryCount)
-                            {
-                                break;
-                            }
-                            currentDirectory = directoryEntries[directoryIndex];
-                        }
-                    }
-                }
+					Tuple<long, bool, List<NarcArchiveFileEntry>> got = startReadingNarc(input,reader,inputPath,ignoreFilenames);
+					fimgPosition=got.Item1;
+					hasFilenames=got.Item2;
+					fileEntries=got.Item3;
+				}
 
                 // Read the FIMG section
                 input.Position = fimgPosition;

@@ -1,37 +1,12 @@
 narchive but it's a library.
 fork of https://github.com/nickworonekin/narchive
 
-test program:
-```
-using System;
-using System.IO;
-using Narchive.Formats;
-public static class program{
-	public static int Main(string[] args){
-		// load narc.
-		// if the narc has filenames, item1 of the tuple will be an array of relative filepaths.
-		// so if the narc has subdirectories also, the name could be something like "folder/filename"
-		// if there are no filenames, item1 will be null
-		Tuple<string[],MemoryStream[]> _retTuple = NarcArchive.extract("/tmp/test.narc", false);
-		string[] _names = _retTuple.Item1;
-		Stream[] _streams = _retTuple.Item2; // data streams for the files. they are MemoryStreams and you own them.
+see test.cs for example usage.
 
-		// test write all the files
-		int i;
-		for (i=0;i<_streams.Length;++i){
-			if (_names!=null){
-				Console.WriteLine(_names[i]);
-			}
-			using (FileStream fs = File.OpenWrite("/tmp/out"+i)){
-				// the streams are already at the start for us.
-				_streams[i].CopyTo(fs);
-			}
-		}
-
-		// test make a narc.
-		// if you check the hash of /tmp/test.narc and /tmp/out.narc, they should be the same.
-		NarcArchive.create(_names,_streams,"/tmp/out.narc");
-		return 0;
-	}
-}
-```
+02/15/21:
+the create narc function now uses a new class called CopyOnlyStream
+(there is still a version of the function that takes streams as input though)
+CopyOnlyStream is a class that can get the length of or copy its data to a Stream. that's it.
+in the test code, you can find an example of a CopyOnlyStream for a file input.
+it only opens the file on demand, so you can create tons of CopyOnlyStream without having all the files open at once.
+this allows you to make huge narcs.
